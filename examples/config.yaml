@@ -1,0 +1,83 @@
+# dockwarden configuration reference. Every key is optional; defaults shown.
+# Any key can be overridden with an environment variable, e.g.
+# DOCKWARDEN_DRY_RUN=true, DOCKWARDEN_STRATEGY=synology,
+# DOCKWARDEN_SYNOLOGY_PASSWORD=... (see README for the full list).
+
+docker:
+  host: ""                       # defaults to DOCKER_HOST or unix:///var/run/docker.sock
+  config_file: ""                # Docker CLI config.json for registry credentials (default ~/.docker/config.json)
+
+registry:
+  timeout: 30s
+  skip_tls_verify: false
+  insecure: []                   # registries to contact over plain HTTP, e.g. ["registry.lan:5000"]
+
+log:
+  level: info                    # debug, info, warn, error
+  format: text                   # text or json
+
+interval: 0                      # 0 = run once and exit; "24h" = built-in daily loop
+run_on_start: true               # when interval is set, run immediately as well
+dry_run: false                   # report only; no pull, build or restart
+monitor_only: false              # like dry_run but intended for permanent use (notifications only)
+label_enable: false              # true = opt-in: only containers with com.dockwarden.enable=true
+include_stopped: false
+containers: []                   # restrict to these container names
+cleanup: false                   # remove the old image after a successful update
+state_file: /var/lib/dockwarden/state.json
+stop_timeout: 30s
+exit_code_on_updates: 0          # e.g. 3 to signal "updates pending" from dry-run/monitor-only runs
+
+compose:
+  # Map host paths (as recorded in compose labels) to paths inside the
+  # dockwarden container when they are not mounted at identical paths.
+  path_map: {}
+  # path_map:
+  #   /volume1/docker: /projects
+
+build:
+  mode: auto                     # auto | compose | api | command
+  pull: true                     # pass --pull so base images are refreshed during the build
+  no_cache: false
+  timeout: 30m
+  # For mode=command; template variables: .Project .Service .WorkingDir
+  # .ConfigFiles .Context .Dockerfile .Tag .BaseImages .Pull .NoCache
+  command: ""
+  # command: ssh nas "cd {{.WorkingDir | shellquote}} && docker compose build --pull {{.Service}}"
+
+strategy:
+  type: docker                   # docker | command | synology
+  docker:
+    compose_cli: auto            # auto | always | never — use `docker compose up -d` for compose containers
+  command:
+    # Template variables: .Kind (image|rebuild) .ContainerID .ContainerName
+    # .Image .OldImageID .Project .Service .WorkingDir .ConfigFiles
+    # .BaseImages .Labels
+    template: ""
+    # template: >-
+    #   ssh nas "cd {{.WorkingDir | shellquote}} && docker compose up -d --build {{.Service}}"
+    shell: /bin/sh
+    handles_build: false         # true if the command rebuilds the service itself
+    handles_pull: false          # true if the command pulls images itself
+    timeout: 10m
+  synology:
+    url: https://nas.local:5001
+    username: ""                 # prefer DOCKWARDEN_SYNOLOGY_USERNAME or username_file
+    password: ""                 # prefer DOCKWARDEN_SYNOLOGY_PASSWORD or password_file
+    username_file: ""
+    password_file: ""            # e.g. /run/secrets/dsm_password
+    insecure_skip_verify: false  # accept DSM's self-signed certificate
+    timeout: 10m
+    # Map compose project names to Container Manager project names when
+    # they differ (by default the name, then the project path, is matched).
+    project_map: {}
+
+notify:
+  webhook:
+    url: ""                      # e.g. https://ntfy.sh/mytopic or a Slack/Discord webhook
+    method: POST
+    headers: {}
+    on: changes                  # changes | errors | always
+    timeout: 15s
+    # Custom body template (Go text/template over the report; default is JSON).
+    # template: '{"text": {{ .Summary | json }} }'
