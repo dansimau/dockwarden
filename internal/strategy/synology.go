@@ -35,6 +35,9 @@ type Synology struct {
 	ProjectMap map[string]string
 
 	projects []synology.Project
+	// done tracks projects already redeployed in this run so that several
+	// updated containers of one project trigger a single build+start.
+	done map[string]bool
 }
 
 func (s *Synology) Name() string       { return "synology" }
@@ -72,6 +75,10 @@ func (s *Synology) updateProject(ctx context.Context, t *Target) error {
 	if err != nil {
 		return err
 	}
+	if s.done[p.ID] {
+		s.Logger.Debug("project already redeployed in this run", "project", p.Name)
+		return nil
+	}
 	log := s.Logger.With("project", p.Name, "id", p.ID, "service", t.Compose.Service)
 	log.Info("building project via DSM Container Manager")
 	if err := s.Client.ProjectAction(ctx, synology.ProjectBuild, p.ID); err != nil {
@@ -81,6 +88,10 @@ func (s *Synology) updateProject(ctx context.Context, t *Target) error {
 	if err := s.Client.ProjectAction(ctx, synology.ProjectStart, p.ID); err != nil {
 		return fmt.Errorf("start project %s: %w", p.Name, err)
 	}
+	if s.done == nil {
+		s.done = map[string]bool{}
+	}
+	s.done[p.ID] = true
 	return nil
 }
 
@@ -134,6 +145,7 @@ func (s *Synology) findProject(ctx context.Context, t *Target) (*synology.Projec
 // BeginRun resets per-run caches so a fresh project list is fetched.
 func (s *Synology) BeginRun(ctx context.Context) error {
 	s.projects = nil
+	s.done = nil
 	return nil
 }
 

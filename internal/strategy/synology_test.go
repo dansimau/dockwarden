@@ -73,7 +73,7 @@ func TestSynologyProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(f.calls, ",")
-	want := "login,list,build_stream u1,start_stream u1,build_stream u2,start_stream u2,build_stream u2,start_stream u2,logout"
+	want := "login,list,build_stream u1,start_stream u1,build_stream u2,start_stream u2,logout"
 	if got != want {
 		t.Fatalf("calls:\n%s\nwant:\n%s", got, want)
 	}
@@ -104,5 +104,22 @@ func TestSynologyBuildFailure(t *testing.T) {
 	err := s.Update(context.Background(), &Target{Compose: &compose.Info{Project: "p"}})
 	if err == nil || !strings.Contains(err.Error(), "build failed") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestSynologyDedupePerRun(t *testing.T) {
+	f := &fakeSyno{projects: []synology.Project{{ID: "u1", Name: "p"}}}
+	s := &Synology{Client: f, Logger: testLogger()}
+	ctx := context.Background()
+	s.BeginRun(ctx)
+	s.Update(ctx, &Target{Compose: &compose.Info{Project: "p", Service: "a"}})
+	s.Update(ctx, &Target{Compose: &compose.Info{Project: "p", Service: "b"}})
+	s.EndRun(ctx)
+	s.BeginRun(ctx)
+	s.Update(ctx, &Target{Compose: &compose.Info{Project: "p", Service: "a"}})
+	got := strings.Join(f.calls, ",")
+	want := "login,list,build_stream u1,start_stream u1,logout,login,list,build_stream u1,start_stream u1"
+	if got != want {
+		t.Fatalf("calls:\n%s\nwant:\n%s", got, want)
 	}
 }

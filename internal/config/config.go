@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -189,7 +190,7 @@ func Load(path string) (*Config, error) {
 		}
 		dec := yaml.NewDecoder(strings.NewReader(string(data)))
 		dec.KnownFields(true)
-		if err := dec.Decode(cfg); err != nil && !errors.Is(err, errEOF) && err.Error() != "EOF" {
+		if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
@@ -198,8 +199,6 @@ func Load(path string) (*Config, error) {
 	}
 	return cfg, nil
 }
-
-var errEOF = errors.New("EOF")
 
 // EnvPrefix is the prefix for environment overrides.
 const EnvPrefix = "DOCKWARDEN_"
