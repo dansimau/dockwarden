@@ -1,0 +1,7 @@
+/dockwarden
+/dist/
+/bin/
+*.test
+/state.json
+/config.yaml
+/.env
