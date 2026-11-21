@@ -130,3 +130,14 @@ func (s *Synology) findProject(ctx context.Context, t *Target) (*synology.Projec
 	}
 	return nil, fmt.Errorf("no DSM Container Manager project matches compose project %q (dir %s); set strategy.synology.project_map", t.Compose.Project, t.Compose.WorkingDir)
 }
+
+// BeginRun resets per-run caches so a fresh project list is fetched.
+func (s *Synology) BeginRun(ctx context.Context) error {
+	s.projects = nil
+	return nil
+}
+
+// EndRun logs out of DSM.
+func (s *Synology) EndRun(ctx context.Context) error {
+	return s.Close(ctx)
+}
