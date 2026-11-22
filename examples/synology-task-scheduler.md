@@ -49,8 +49,11 @@ Notes:
 * With `strategy.type: synology` dockwarden asks Container Manager to
   rebuild/start projects and recreate containers, so DSM's UI stays in sync.
   Use a dedicated DSM user in the *administrators* group without 2FA.
-  Verify the mapping first:
-  `docker run --rm ... ghcr.io/dansimau/dockwarden synology projects`.
+  Compose projects are matched to DSM projects automatically; verify the
+  derived mapping first with
+  `docker run --rm ... ghcr.io/dansimau/dockwarden synology projects`
+  (same mounts and env vars as above, `synology projects` instead of
+  `--config ...`) and add `project_map` entries only for mismatches.
 * With `strategy.type: docker` dockwarden recreates containers itself via the
   socket (Watchtower style). Container Manager will show the new
   containers, but projects created in its UI are best updated via the

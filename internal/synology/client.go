@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dansimau/dockwarden/internal/compose"
 )
 
 const (
@@ -323,6 +325,17 @@ type Project struct {
 	Services     []string `json:"services"`
 	ContainerIDs []string `json:"containerIds"`
 	IsPackage    bool     `json:"is_package"`
+	// Content is the project's compose file (returned by `get`).
+	Content string `json:"content"`
+}
+
+// ComposeName derives the docker compose project name for this DSM project
+// the way compose does when run from the project directory: the top-level
+// `name:` of the compose file, else COMPOSE_PROJECT_NAME from the
+// project's .env (envFile, "" if not readable), else the normalised
+// directory basename. The result is normalised like compose does.
+func (p Project) ComposeName(envFile string) string {
+	return compose.DeriveProjectName([]byte(p.Content), p.Path, envFile)
 }
 
 // ListProjects returns all Container Manager projects.

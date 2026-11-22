@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -260,7 +261,7 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		if err != nil {
 			return nil, noop, err
 		}
-		s := &strategy.Synology{Client: client, Logger: logger, ProjectMap: cfg.Strategy.Synology.ProjectMap}
+		s := &strategy.Synology{Client: client, Logger: logger, ProjectMap: cfg.Strategy.Synology.ProjectMap, PathMap: pathMap}
 		strat = s
 		cleanupFn = func() { _ = s.Close(context.Background()) }
 	}
@@ -331,6 +332,7 @@ func runSynology(ctx context.Context, args []string, cfg *config.Config, logger 
 		return ExitFatal
 	}
 	defer client.Logout(context.Background()) //nolint:errcheck
+	pathMap := compose.PathMapper(cfg.Compose.PathMap)
 	switch args[0] {
 	case "projects":
 		ps, err := client.ListProjects(ctx)
@@ -338,10 +340,17 @@ func runSynology(ctx context.Context, args []string, cfg *config.Config, logger 
 			fmt.Fprintln(stderr, err)
 			return ExitFatal
 		}
-		fmt.Fprintf(stdout, "%-38s %-24s %-10s %s\n", "ID", "NAME", "STATUS", "PATH")
+		fmt.Fprintf(stdout, "%-38s %-24s %-24s %-10s %s\n", "ID", "NAME", "COMPOSE PROJECT", "STATUS", "PATH")
 		for _, p := range ps {
-			fmt.Fprintf(stdout, "%-38s %-24s %-10s %s\n", p.ID, p.Name, p.Status, p.Path)
+			composeName := "?"
+			if full, err := client.GetProject(ctx, p.ID); err == nil {
+				composeName = full.ComposeName(filepath.Join(pathMap.Map(full.Path), ".env"))
+			} else {
+				logger.Warn("cannot fetch project details", "project", p.Name, "error", err)
+			}
+			fmt.Fprintf(stdout, "%-38s %-24s %-24s %-10s %s\n", p.ID, p.Name, composeName, p.Status, p.Path)
 		}
+		fmt.Fprintln(stdout, "\nCOMPOSE PROJECT is the name dockwarden derives for each DSM project (compose file name:, .env COMPOSE_PROJECT_NAME, or directory). Override with strategy.synology.project_map.")
 	case "containers":
 		cs, err := client.ListContainers(ctx)
 		if err != nil {

@@ -75,10 +75,21 @@ which mirrors clicking Build then Start in the UI. Because dockwarden has
 already pulled the newer base image through the Docker socket, the compose
 build picks it up.
 
-Project matching: an explicit `strategy.synology.project_map` entry, then a
-case-insensitive match of the compose project name against the DSM project
-`name`, then a match of the compose `working_dir` against the DSM project
-`path` (e.g. `/volume1/docker/myapp`).
+Project matching (automatic): at the start of a run dockwarden calls `list`
+and then `get` for every project to obtain its `content` (compose YAML) and
+`path`. From those it derives the compose project name like docker compose
+does: top-level `name:` → `COMPOSE_PROJECT_NAME` in `<path>/.env` (read
+locally through the mounted project directory or `compose.path_map`) →
+basename of `path`; normalised to lowercase `[a-z0-9_-]` with leading `_`/`-`
+removed. The container's `com.docker.compose.project` label is looked up in
+that map. Resolution order: `strategy.synology.project_map` override (DSM
+name or id) → derived compose name → DSM project `name` (case-insensitive) →
+DSM project `path` == compose `working_dir`.
+
+Assumption: Container Manager runs compose from the project directory
+without `-p`, so the containers' project label equals the derived name. If
+DSM instead passes its own project name as `-p`, the name fallback still
+matches.
 
 ## SYNO.Docker.Container
 
@@ -104,6 +115,8 @@ dockwarden does exactly this after it has pulled the image.
 * Whether `build_stream` leaves previously running containers stopped
   (hence the unconditional `start_stream`).
 * Exact stream line format of `*_stream` methods.
+* Whether Container Manager passes `-p <project name>` to compose (affects
+  the automatic mapping; both cases are handled, see above).
 * That Container Manager requires the *administrators* group — no official
   statement exists; it is the community consensus and error 105 is what you
   get otherwise.

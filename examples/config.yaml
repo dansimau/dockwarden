@@ -68,9 +68,13 @@ strategy:
     password_file: ""            # e.g. /run/secrets/dsm_password
     insecure_skip_verify: false  # accept DSM's self-signed certificate
     timeout: 10m
-    # Map compose project names to Container Manager project names when
-    # they differ (by default the name, then the project path, is matched).
+    # Compose projects are mapped to Container Manager projects automatically
+    # (compose name derived from each DSM project's compose file `name:`,
+    # its .env COMPOSE_PROJECT_NAME, or its directory). Override here only
+    # for edge cases: compose project name -> DSM project name or id.
     project_map: {}
+    # project_map:
+    #   my-compose-name: "My DSM Project"
 
 notify:
   webhook:

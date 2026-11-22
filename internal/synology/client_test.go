@@ -5,10 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/dansimau/dockwarden/internal/synology/synotest"
 )
 
-func newTestClient(t *testing.T, f *fakeDSM) *Client {
-	c, err := New(Options{URL: f.srv.URL, Username: "admin", Password: "pw"})
+func newTestClient(t *testing.T, f *synotest.DSM) *Client {
+	c, err := New(Options{URL: f.URL, Username: "admin", Password: "pw"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +18,7 @@ func newTestClient(t *testing.T, f *fakeDSM) *Client {
 }
 
 func TestLoginLogout(t *testing.T) {
-	f := newFakeDSM(t)
+	f := synotest.New(t)
 	c := newTestClient(t, f)
 	ctx := context.Background()
 	if err := c.Login(ctx); err != nil {
@@ -38,8 +40,8 @@ func TestLoginLogout(t *testing.T) {
 }
 
 func TestLoginBadPassword(t *testing.T) {
-	f := newFakeDSM(t)
-	c, _ := New(Options{URL: f.srv.URL, Username: "admin", Password: "nope"})
+	f := synotest.New(t)
+	c, _ := New(Options{URL: f.URL, Username: "admin", Password: "nope"})
 	err := c.Login(context.Background())
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != 400 || !strings.Contains(err.Error(), "incorrect password") {
@@ -48,8 +50,8 @@ func TestLoginBadPassword(t *testing.T) {
 }
 
 func TestProjects(t *testing.T) {
-	f := newFakeDSM(t)
-	f.projects["uuid-1"] = Project{ID: "uuid-1", Name: "myapp", Path: "/volume1/docker/myapp", Status: "RUNNING"}
+	f := synotest.New(t)
+	f.Projects["uuid-1"] = synotest.Project{ID: "uuid-1", Name: "myapp", Path: "/volume1/docker/myapp", Status: "RUNNING", Content: "name: explicit\nservices: {}\n"}
 	c := newTestClient(t, f)
 	ctx := context.Background()
 	if err := c.Login(ctx); err != nil {
@@ -60,8 +62,14 @@ func TestProjects(t *testing.T) {
 		t.Fatalf("list: %v %v", ps, err)
 	}
 	p, err := c.GetProject(ctx, "uuid-1")
-	if err != nil || p.Path != "/volume1/docker/myapp" {
+	if err != nil || p.Path != "/volume1/docker/myapp" || p.Content == "" {
 		t.Fatalf("get: %v %v", p, err)
+	}
+	if n := p.ComposeName(""); n != "explicit" {
+		t.Fatalf("compose name %q", n)
+	}
+	if n := (Project{Path: "/volume1/docker/My Stack"}).ComposeName(""); n != "mystack" {
+		t.Fatalf("compose name from path %q", n)
 	}
 	if err := c.ProjectAction(ctx, ProjectBuild, "uuid-1"); err != nil {
 		t.Fatal(err)
@@ -72,7 +80,7 @@ func TestProjects(t *testing.T) {
 }
 
 func TestContainers(t *testing.T) {
-	f := newFakeDSM(t)
+	f := synotest.New(t)
 	c := newTestClient(t, f)
 	ctx := context.Background()
 	if err := c.Login(ctx); err != nil {
@@ -94,8 +102,8 @@ func TestContainers(t *testing.T) {
 }
 
 func TestPermissionError(t *testing.T) {
-	f := newFakeDSM(t)
-	f.fail["SYNO.Docker.Project/list"] = 105
+	f := synotest.New(t)
+	f.Fail["SYNO.Docker.Project/list"] = 105
 	c := newTestClient(t, f)
 	ctx := context.Background()
 	c.Login(ctx)
@@ -106,7 +114,7 @@ func TestPermissionError(t *testing.T) {
 }
 
 func TestNotLoggedIn(t *testing.T) {
-	f := newFakeDSM(t)
+	f := synotest.New(t)
 	c := newTestClient(t, f)
 	_, err := c.ListProjects(context.Background())
 	var apiErr *APIError

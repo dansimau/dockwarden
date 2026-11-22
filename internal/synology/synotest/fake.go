@@ -1,4 +1,4 @@
-package synology
+package synotest
 
 import (
 	"encoding/json"
@@ -10,34 +10,52 @@ import (
 	"testing"
 )
 
-// fakeDSM is an httptest server emulating the subset of the DSM Web API.
-type fakeDSM struct {
+// Project mirrors the fields of a DSM Container Manager project.
+type Project struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Status  string `json:"status"`
+	Content string `json:"content,omitempty"`
+}
+
+// Container mirrors a DSM container summary.
+type Container struct {
+	Name   string `json:"name"`
+	Image  string `json:"image"`
+	Status string `json:"status"`
+}
+
+// DSM is an httptest server emulating the subset of the DSM Web API that
+// dockwarden uses. Login requires account "admin" / password "pw".
+type DSM struct {
 	t        *testing.T
-	srv      *httptest.Server
+	URL      string
 	mu       sync.Mutex
 	calls    []string // "api/method"
 	params   []map[string]string
-	projects map[string]Project
-	fail     map[string]int // "api/method" -> error code
-	noToken  bool
+	Projects map[string]Project
+	Fail     map[string]int // "api/method" -> error code
 }
 
-func newFakeDSM(t *testing.T) *fakeDSM {
-	f := &fakeDSM{t: t, projects: map[string]Project{}, fail: map[string]int{}}
-	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
-	t.Cleanup(f.srv.Close)
+// New starts a fake DSM; it is closed when the test ends.
+func New(t *testing.T) *DSM {
+	f := &DSM{t: t, Projects: map[string]Project{}, Fail: map[string]int{}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handle))
+	t.Cleanup(srv.Close)
+	f.URL = srv.URL
 	return f
 }
 
-func (f *fakeDSM) write(w http.ResponseWriter, data any) {
+func (f *DSM) write(w http.ResponseWriter, data any) {
 	json.NewEncoder(w).Encode(map[string]any{"success": true, "data": data})
 }
 
-func (f *fakeDSM) fail_(w http.ResponseWriter, code int) {
+func (f *DSM) fail_(w http.ResponseWriter, code int) {
 	json.NewEncoder(w).Encode(map[string]any{"success": false, "error": map[string]any{"code": code}})
 }
 
-func (f *fakeDSM) handle(w http.ResponseWriter, r *http.Request) {
+func (f *DSM) handle(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/webapi/entry.cgi" {
 		http.NotFound(w, r)
 		return
@@ -54,7 +72,7 @@ func (f *fakeDSM) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.calls = append(f.calls, key)
 	f.params = append(f.params, params)
-	code := f.fail[key]
+	code := f.Fail[key]
 	f.mu.Unlock()
 	if code != 0 {
 		f.fail_(w, code)
@@ -85,12 +103,12 @@ func (f *fakeDSM) handle(w http.ResponseWriter, r *http.Request) {
 		f.write(w, map[string]any{})
 		return
 	}
-	// everything else requires a session
+	// everything else requires a session (SID + SynoToken)
 	if r.Form.Get("_sid") != "SID123" {
 		f.fail_(w, 119)
 		return
 	}
-	if !f.noToken && r.Header.Get("X-SYNO-TOKEN") != "TOK" {
+	if r.Header.Get("X-SYNO-TOKEN") != "TOK" {
 		f.fail_(w, 105)
 		return
 	}
@@ -100,13 +118,21 @@ func (f *fakeDSM) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	switch key {
 	case "SYNO.Docker.Project/list":
-		f.write(w, f.projects)
+		// Like DSM, list returns project summaries without the compose content.
+		summaries := map[string]Project{}
+		f.mu.Lock()
+		for id, p := range f.Projects {
+			p.Content = ""
+			summaries[id] = p
+		}
+		f.mu.Unlock()
+		f.write(w, summaries)
 	case "SYNO.Docker.Project/get":
 		id := r.Form.Get("id")
 		if !strings.HasPrefix(id, `"`) {
 			f.t.Errorf("id not JSON quoted: %s", id)
 		}
-		p, ok := f.projects[strings.Trim(id, `"`)]
+		p, ok := f.Projects[strings.Trim(id, `"`)]
 		if !ok {
 			f.fail_(w, 100)
 			return
@@ -114,20 +140,21 @@ func (f *fakeDSM) handle(w http.ResponseWriter, r *http.Request) {
 		f.write(w, p)
 	case "SYNO.Docker.Project/build_stream", "SYNO.Docker.Project/start_stream", "SYNO.Docker.Project/stop_stream":
 		id := strings.Trim(r.Form.Get("id"), `"`)
-		p, ok := f.projects[id]
+		p, ok := f.Projects[id]
 		if !ok {
 			f.fail_(w, 100)
 			return
 		}
 		fmt.Fprintln(w, "Building web")
 		fmt.Fprintln(w, "web  Built")
-		if method == "start_stream" {
+		switch method {
+		case "start_stream":
 			p.Status = "RUNNING"
-		} else if method == "stop_stream" {
+		case "stop_stream":
 			p.Status = "STOPPED"
 		}
 		f.mu.Lock()
-		f.projects[id] = p
+		f.Projects[id] = p
 		f.mu.Unlock()
 	case "SYNO.Docker.Container/start", "SYNO.Docker.Container/stop", "SYNO.Docker.Container/restart", "SYNO.Docker.Container/delete":
 		name := r.Form.Get("name")
@@ -148,7 +175,8 @@ func (f *fakeDSM) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeDSM) Calls() []string {
+// Calls returns the "api/method" pairs received so far.
+func (f *DSM) Calls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.calls...)
