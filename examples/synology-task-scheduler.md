@@ -29,6 +29,7 @@ docker run --rm --name dockwarden \
   -v "$CONF/state:/var/lib/dockwarden" \
   -v "$CONF/secrets:/run/secrets:ro" \
   -v "$PROJECTS:$PROJECTS" \
+  -v /root/.docker/config.json:/root/.docker/config.json:ro \
   -e DOCKWARDEN_SYNOLOGY_USERNAME=dockwarden \
   -e DOCKWARDEN_SYNOLOGY_PASSWORD_FILE=/run/secrets/dsm_password \
   ghcr.io/dansimau/dockwarden:latest --config /etc/dockwarden/config.yaml
@@ -49,11 +50,13 @@ Notes:
 * With `strategy.type: synology` dockwarden asks Container Manager to
   rebuild/start projects and recreate containers, so DSM's UI stays in sync.
   Use a dedicated DSM user in the *administrators* group without 2FA.
-  Compose projects are matched to DSM projects automatically; verify the
-  derived mapping first with
-  `docker run --rm ... ghcr.io/dansimau/dockwarden synology projects`
-  (same mounts and env vars as above, `synology projects` instead of
-  `--config ...`) and add `project_map` entries only for mismatches.
+  Nothing else needs configuring: dockwarden finds the Container Manager
+  project that owns each container by itself. To check that the credentials
+  work, run the same `docker run` with `synology projects` instead of
+  `--config ...`.
+* The `/root/.docker/config.json` mount supplies credentials for private
+  registries (e.g. ghcr.io): run `docker login ghcr.io` once as root on the
+  NAS so that file exists. Drop the line if all your images are public.
 * With `strategy.type: docker` dockwarden recreates containers itself via the
   socket (Watchtower style). Container Manager will show the new
   containers, but projects created in its UI are best updated via the

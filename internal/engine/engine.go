@@ -290,7 +290,13 @@ func (e *Engine) check(ctx context.Context, cands []*candidate, res *Result) *pl
 			continue
 		}
 		c.imageRef = c.inspect.Config.Image
-		if hexID.MatchString(c.imageRef) && len(img.RepoTags) > 0 {
+		if hexID.MatchString(c.imageRef) {
+			// Container was created from a raw image ID. Use its tag if it has
+			// one; otherwise there is no tag to check against a registry.
+			if len(img.RepoTags) == 0 {
+				log.Debug("skipping: container runs an untagged image ID", "image", short(c.imageRef))
+				continue
+			}
 			c.imageRef = img.RepoTags[0]
 		}
 
@@ -315,7 +321,7 @@ func (e *Engine) check(ctx context.Context, cands []*candidate, res *Result) *pl
 		}
 
 		if len(img.RepoDigests) == 0 {
-			log.Info("skipping: image has no repo digest (built locally?) and no compose build config was found")
+			log.Debug("skipping: local-only image (no repo digest) and no compose build config", "image", c.imageRef)
 			continue
 		}
 		ref, err := registry.ParseImage(c.imageRef)
@@ -329,6 +335,10 @@ func (e *Engine) check(ctx context.Context, cands []*candidate, res *Result) *pl
 		}
 		local := digestsFor(img.RepoDigests, ref)
 		remote, err := e.o.Registry.Resolve(ctx, ref, local)
+		if isLocalOnlyError(err, c.imageRef, img.RepoDigests) {
+			log.Debug("skipping: image not in registry; treating as local-only", "image", c.imageRef, "error", err)
+			continue
+		}
 		if err != nil {
 			log.Warn("registry check failed", "image", ref.Familiar, "error", err)
 			res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", c.name, err))
@@ -367,13 +377,29 @@ func (e *Engine) checkBases(ctx context.Context, rb *rebuild, log *slog.Logger) 
 		if ref.Digest != "" {
 			continue // pinned
 		}
+		if hexID.MatchString(base) {
+			log.Debug("ignoring base image given as a raw image ID", "base", short(base))
+			continue
+		}
+		localImg, localErr := e.o.Docker.ImageInspect(ctx, base)
+		localExists := localErr == nil
+		if localExists && len(localImg.RepoDigests) == 0 {
+			// Built or tagged locally (e.g. FROM mybase:local): nothing to
+			// compare against a registry, so it never triggers a rebuild.
+			log.Debug("ignoring local-only base image", "base", base)
+			continue
+		}
 		var known []string
 		if d := recorded.BaseDigests[base]; d != "" {
 			known = []string{d}
-		} else if img, err := e.o.Docker.ImageInspect(ctx, base); err == nil {
-			known = digestsFor(img.RepoDigests, ref)
+		} else if localExists {
+			known = digestsFor(localImg.RepoDigests, ref)
 		}
 		remote, err := e.o.Registry.Resolve(ctx, ref, known)
+		if err != nil && localExists && isLocalOnlyError(err, base, localImg.RepoDigests) {
+			log.Debug("ignoring base image not found in registry; treating as local-only", "base", base, "error", err)
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("resolve base %s: %w", ref.Familiar, err)
 		}
@@ -420,6 +446,31 @@ func digestsFor(repoDigests []string, ref registry.Image) []string {
 		return same
 	}
 	return all
+}
+
+// isLocalOnlyError reports whether a registry error for ref most likely
+// means the image only exists locally: the registry answered 401/404 (Docker
+// Hub returns 401 for unknown repositories), the reference is a bare
+// unqualified name (no registry host) and the local image carries no repo
+// digest, i.e. it was never pulled from anywhere.
+func isLocalOnlyError(err error, ref string, repoDigests []string) bool {
+	var he *registry.HTTPError
+	if !errors.As(err, &he) || (he.Status != 401 && he.Status != 404) {
+		return false
+	}
+	if len(repoDigests) > 0 {
+		return false
+	}
+	name := ref
+	if i := strings.LastIndex(name, "@"); i >= 0 {
+		name = name[:i]
+	}
+	first, _, hasPath := strings.Cut(name, "/")
+	if !hasPath {
+		return true // bare name such as rcdev:local
+	}
+	// A registry host contains a dot or a port, or is "localhost".
+	return !strings.ContainsAny(first, ".:") && first != "localhost"
 }
 
 func normRepo(r string) string {

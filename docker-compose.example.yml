@@ -8,7 +8,8 @@
 #     containers record absolute host paths, and `docker compose build`
 #     needs the build context at that path. If you can't mount at the same
 #     path, set compose.path_map in the config instead.
-#   * ~/.docker/config.json is mounted read-only for private registries.
+#   * For private registries (e.g. ghcr.io) mount the Docker CLI config that
+#     `docker login` wrote, read-only, at /root/.docker/config.json.
 #   * Secrets come from environment variables or files, not the YAML config.
 services:
   dockwarden:
@@ -25,6 +26,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config.yaml:/etc/dockwarden/config.yaml:ro
       - dockwarden-state:/var/lib/dockwarden
+      # credentials for private registries (`docker login ghcr.io` on the host first)
       - ~/.docker/config.json:/root/.docker/config.json:ro
       # Compose projects with `build:` sections, mounted at identical paths:
       - /volume1/docker:/volume1/docker

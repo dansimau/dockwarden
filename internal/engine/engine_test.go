@@ -357,3 +357,158 @@ func TestDigestsFor(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestLocalOnlyContainerImagesAreSkipped(t *testing.T) {
+	fc, res, strat, _, opts := setup(t)
+	// Locally built/tagged image with no RepoDigests: never contacts a registry.
+	fc.AddImage(fake.Image{ID: "sha256:rcdev", RepoTags: []string{"rcdev:local"}})
+	fc.AddContainer("l1", "rcdev", "rcdev:local", "sha256:rcdev", nil)
+	// Image with a tag but without digests whose registry lookup would 401.
+	fc.AddImage(fake.Image{ID: "sha256:priv", RepoTags: []string{"internal-tool:1.0"}})
+	fc.AddContainer("l2", "internal-tool", "internal-tool:1.0", "sha256:priv", nil)
+	res.err = map[string]error{"internal-tool:1.0": &registry.HTTPError{Status: 401, Image: "internal-tool:1.0"}}
+	r, err := New(opts).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Errors) != 0 || len(r.Failed) != 0 {
+		t.Fatalf("local-only images must not produce errors: %+v", r)
+	}
+	for _, c := range res.calls {
+		if c == "rcdev:local" || c == "internal-tool:1.0" {
+			t.Fatalf("registry must not be asked about local-only image %s", c)
+		}
+	}
+	if len(strat.targets) != 1 || strat.targets[0].ContainerName != "web" {
+		t.Fatalf("only web should update: %+v", strat.targets)
+	}
+}
+
+func TestLocalOnlyErrorFallback(t *testing.T) {
+	fc, res, _, _, opts := setup(t)
+	// Image that *was* pulled once (has a digest) but is now unknown to the
+	// registry: that is a real problem and must still be reported.
+	fc.AddImage(fake.Image{ID: "sha256:gone", RepoTags: []string{"gone:1"}, RepoDigests: []string{"gone@sha256:g"}})
+	fc.AddContainer("g1", "gone", "gone:1", "sha256:gone", nil)
+	res.err = map[string]error{"gone:1": &registry.HTTPError{Status: 404, Image: "gone:1"}}
+	r, _ := New(opts).Run(context.Background())
+	if len(r.Errors) != 1 || !strings.Contains(r.Errors[0], "gone") {
+		t.Fatalf("expected error for previously pulled image: %+v", r)
+	}
+}
+
+func TestIsLocalOnlyError(t *testing.T) {
+	e401 := &registry.HTTPError{Status: 401}
+	cases := []struct {
+		err     error
+		ref     string
+		digests []string
+		want    bool
+	}{
+		{e401, "rcdev:local", nil, true},
+		{&registry.HTTPError{Status: 404}, "mytool", nil, true},
+		{e401, "ghcr.io/org/app:1", nil, false},              // qualified: a real auth problem
+		{e401, "localhost:5000/x:1", nil, false},             // local registry host
+		{e401, "rcdev:local", []string{"r@sha256:x"}, false}, // was pulled before
+		{&registry.HTTPError{Status: 500}, "rcdev:local", nil, false},
+		{errors.New("timeout"), "rcdev:local", nil, false},
+		{nil, "rcdev:local", nil, false},
+	}
+	for _, c := range cases {
+		if got := isLocalOnlyError(c.err, c.ref, c.digests); got != c.want {
+			t.Errorf("isLocalOnlyError(%v, %q, %v) = %v, want %v", c.err, c.ref, c.digests, got, c.want)
+		}
+	}
+}
+
+func TestUntaggedImageIDContainersAreSkipped(t *testing.T) {
+	fc, res, strat, _, opts := setup(t)
+	const id = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	// dawarich-style: created from a raw image ID; image has digests but no tags.
+	fc.AddImage(fake.Image{ID: id, RepoDigests: []string{"freikin/dawarich@sha256:d"}})
+	fc.AddContainer("d1", "dawarich_app", id, id, nil)
+	// raw ID with a tag available: the tag is checked instead.
+	const redisID = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	fc.AddImage(fake.Image{ID: redisID, RepoTags: []string{"redis:7"}, RepoDigests: []string{"redis@sha256:same"}})
+	fc.AddContainer("d2", "by-id-with-tag", redisID, redisID, nil)
+	r, err := New(opts).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Errors) != 0 {
+		t.Fatalf("unexpected errors: %+v", r.Errors)
+	}
+	for _, c := range res.calls {
+		if strings.Contains(c, "sha256") {
+			t.Fatalf("registry asked about raw image id: %s", c)
+		}
+	}
+	if len(strat.targets) != 1 || strat.targets[0].ContainerName != "web" {
+		t.Fatalf("targets %+v", strat.targets)
+	}
+}
+
+func TestRebuildIgnoresLocalOnlyBase(t *testing.T) {
+	fc, res, _, bld, opts := setup(t)
+	dir := composeProject(t, "FROM rcdev:local AS tools\nFROM busybox:stable\nCOPY --from=tools /x /x\n")
+	fc.AddImage(fake.Image{ID: "sha256:rcdev", RepoTags: []string{"rcdev:local"}}) // local-only base
+	fc.AddImage(fake.Image{ID: "sha256:bb", RepoTags: []string{"busybox:stable"}, RepoDigests: []string{"busybox@sha256:bb1"}})
+	fc.AddImage(fake.Image{ID: "sha256:app", RepoTags: []string{"proj-app:latest"}})
+	fc.AddContainer("a1", "proj-app-1", "proj-app", "sha256:app", composeLabels(dir, "app"))
+	res.remote["busybox:stable"] = registry.Remote{Digest: "sha256:bb2"}
+	res.err = map[string]error{"rcdev:local": &registry.HTTPError{Status: 401, Image: "rcdev:local"}}
+	r, err := New(opts).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Errors) != 0 || len(r.Failed) != 0 {
+		t.Fatalf("local-only base must not fail the check: %+v", r)
+	}
+	for _, c := range res.calls {
+		if c == "rcdev:local" {
+			t.Fatal("registry must not be asked about local-only base")
+		}
+	}
+	if len(bld.reqs) != 1 || bld.reqs[0].BaseImages[0] != "busybox:stable" {
+		t.Fatalf("expected rebuild for busybox only: %+v", bld.reqs)
+	}
+	s, _ := opts.State.Get("proj/app")
+	if _, ok := s.BaseDigests["rcdev:local"]; ok {
+		t.Fatal("local-only base must not be recorded in state")
+	}
+}
+
+func TestRebuildBaseUnknownToRegistryButLocal(t *testing.T) {
+	fc, res, _, bld, opts := setup(t)
+	// Base exists locally (pulled from nowhere: no digests) but is referenced
+	// under a name the registry rejects with 404: treated as local-only.
+	dir := composeProject(t, "FROM mybase\n")
+	fc.AddImage(fake.Image{ID: "sha256:mybase", RepoTags: []string{"mybase:latest"}})
+	fc.AddImage(fake.Image{ID: "sha256:app", RepoTags: []string{"proj-app:latest"}})
+	fc.AddContainer("a1", "proj-app-1", "proj-app", "sha256:app", composeLabels(dir, "app"))
+	res.err = map[string]error{"mybase:latest": &registry.HTTPError{Status: 404, Image: "mybase:latest"}}
+	r, _ := New(opts).Run(context.Background())
+	if len(r.Errors) != 0 || len(bld.reqs) != 0 {
+		t.Fatalf("result %+v builds=%d", r, len(bld.reqs))
+	}
+	// Base missing locally AND unknown to the registry is still an error.
+	fc2, res2, _, _, opts2 := setup(t)
+	dir2 := composeProject(t, "FROM typo-image:1\n")
+	fc2.AddImage(fake.Image{ID: "sha256:app", RepoTags: []string{"proj-app:latest"}})
+	fc2.AddContainer("a1", "proj-app-1", "proj-app", "sha256:app", composeLabels(dir2, "app"))
+	res2.err = map[string]error{"typo-image:1": &registry.HTTPError{Status: 401, Image: "typo-image:1"}}
+	r2, _ := New(opts2).Run(context.Background())
+	if len(r2.Errors) != 1 {
+		t.Fatalf("expected error for missing base: %+v", r2)
+	}
+}
+
+func TestIsLocalOnlyErrorPaths(t *testing.T) {
+	e := &registry.HTTPError{Status: 401}
+	if !isLocalOnlyError(e, "myorg/tool:1", nil) {
+		t.Fatal("docker hub style user/repo without host is unqualified")
+	}
+	if isLocalOnlyError(e, "registry.lan:5000/tool:1", nil) {
+		t.Fatal("host with port is qualified")
+	}
+}

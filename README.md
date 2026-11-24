@@ -174,23 +174,11 @@ strategy:
 **`synology`** – talks to DSM's Web API (`SYNO.API.Auth`,
 `SYNO.Docker.Project`, `SYNO.Docker.Container`); see
 [docs/synology-api.md](docs/synology-api.md) for the exact calls and the
-sources they were verified against.
-
-Compose projects are mapped to Container Manager projects **automatically**:
-at the start of each run dockwarden lists all DSM projects, fetches each
-one's compose file and path, and derives the compose project name exactly
-as docker compose does — the top-level `name:` in the YAML, else
-`COMPOSE_PROJECT_NAME` from the project's `.env` (readable when the project
-directory is mounted or `compose.path_map` is set), else the directory
-basename — normalised (lowercase, characters outside `[a-z0-9_-]` removed,
-leading `_`/`-` stripped). A container's `com.docker.compose.project` label
-is looked up in that map; `strategy.synology.project_map` (compose name →
-DSM project name or id) overrides it for edge cases, and a DSM project with
-the same name or the same directory is used as a last resort.
-`dockwarden synology projects` prints the derived mapping so you can check
-it. Matched projects are redeployed with the same `build_stream` +
-`start_stream` calls the UI's Build and Start buttons make (once per
-project per run). Plain containers are stopped, deleted with
+sources they were verified against. Setup needs nothing more than the DSM
+URL and credentials: dockwarden works out which Container Manager project
+owns each container by itself. Projects are redeployed with the same
+`build_stream` + `start_stream` calls the UI's Build and Start buttons make
+(once per project per run); plain containers are stopped, deleted with
 `preserve_profile=true` and started again, which makes DSM recreate them
 from their saved profile on the freshly pulled image.
 
@@ -200,15 +188,14 @@ strategy:
   synology:
     url: https://nas.local:5001
     insecure_skip_verify: true      # self-signed DSM certificate
-    password_file: /run/secrets/dsm_password
-    # optional overrides; usually not needed thanks to automatic mapping
-    project_map:
-      my-compose-name: My DSM Project
+    password_file: /run/secrets/dsm_password   # or DOCKWARDEN_SYNOLOGY_PASSWORD
 ```
 
-Use a dedicated DSM user in the *administrators* group with 2FA disabled;
-`dockwarden synology projects` / `synology containers` list what DSM knows
-(including the derived compose project name) so you can check the mapping. A daily DSM Task Scheduler recipe is in
+Set the username with `DOCKWARDEN_SYNOLOGY_USERNAME` (or `username` /
+`username_file`). Use a dedicated DSM user in the *administrators* group
+with 2FA disabled. `dockwarden synology projects` / `synology containers`
+list what DSM knows, which is handy to confirm the credentials work. A daily
+DSM Task Scheduler recipe is in
 [examples/synology-task-scheduler.md](examples/synology-task-scheduler.md).
 
 ## Notifications
@@ -231,11 +218,32 @@ builds and recreation. Mount:
 
 * `/var/run/docker.sock`
 * the state directory (`/var/lib/dockwarden`)
-* `~/.docker/config.json` (read-only) for private registries
+* your Docker CLI `config.json` at `/root/.docker/config.json:ro` if any
+  image comes from a private registry (see below)
 * every directory containing compose projects with `build:` sections, **at
   the same path as on the host** (or configure `compose.path_map`)
 
 See [`docker-compose.example.yml`](docker-compose.example.yml).
+
+### Private registries (ghcr.io, Docker Hub private repos, …)
+
+dockwarden reads registry credentials from the standard Docker CLI config
+file — the one `docker login` writes — for both the manifest check and the
+pull: `auths` entries as well as `credHelpers`/`credsStore`. On the host it
+uses `~/.docker/config.json` (`DOCKER_CONFIG` is honoured); in the
+container mount the file read-only at `/root/.docker/config.json`:
+
+```sh
+docker login ghcr.io            # on the host, once
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v ~/.docker/config.json:/root/.docker/config.json:ro \
+  ghcr.io/dansimau/dockwarden --dry-run
+```
+
+Without it, images from private repositories are reported as `registry
+returned 401` and skipped. `docker.config_file` points dockwarden at a
+different path if needed.
 
 ## Design notes
 
